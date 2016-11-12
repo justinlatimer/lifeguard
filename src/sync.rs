@@ -1,5 +1,9 @@
 #![allow(dead_code)]
-use std::sync::{Arc, RwLock};
+
+extern crate parking_lot;
+
+use std::sync::Arc;
+use self::parking_lot::RwLock;
 use std::fmt;
 use std::ops::{Drop, Deref, DerefMut};
 use std::convert::{AsRef, AsMut};
@@ -105,7 +109,7 @@ impl<P, T> Drop for RecycledInner<P, T>
     #[inline]
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
-            self.pool.borrow().write().unwrap().insert_or_drop(value);
+            self.pool.borrow().write().insert_or_drop(value);
         }
     }
 }
@@ -164,7 +168,7 @@ impl<P, T> Deref for RecycledInner<P, T>
 {
     type Target = T;
     #[inline]
-    fn deref<'a>(&'a self) -> &'a T {
+    fn deref(&self) -> &T {
         self.as_ref()
     }
 }
@@ -174,7 +178,7 @@ impl<P, T> DerefMut for RecycledInner<P, T>
           T: Recycleable + Sync + Send
 {
     #[inline]
-    fn deref_mut<'a>(&'a mut self) -> &'a mut T {
+    fn deref_mut(&mut self) -> &mut T {
         self.as_mut()
     }
 }
@@ -240,12 +244,11 @@ impl<T> CappedCollection<T>
 
     #[inline]
     pub fn insert_or_drop(&mut self, mut value: T) {
-        match self.is_full() {
-            true => drop(value),
-            false => {
-                value.reset();
-                self.values.push(value)
-            }
+        if self.is_full() {
+            drop(value);
+        } else {
+            value.reset();
+            self.values.push(value);
         }
     }
 
@@ -324,13 +327,13 @@ impl<T> Pool<T>
     /// Returns the number of values remaining in the pool.
     #[inline]
     pub fn size(&self) -> usize {
-        (*self.values).read().unwrap().len()
+        (*self.values).read().len()
     }
 
     /// Returns the maximum number of values the pool can hold.
     #[inline]
     pub fn max_size(&self) -> usize {
-        (*self.values).read().unwrap().cap()
+        (*self.values).read().cap()
     }
 
     /// Removes a value from the pool and returns it wrapped in
@@ -366,7 +369,7 @@ impl<T> Pool<T>
     /// returned to the pool.
     #[inline]
     pub fn detached(&self) -> T {
-        let mut collection = self.values.write().unwrap();
+        let mut collection = self.values.write();
         let maybe_value = collection.remove();
         match maybe_value {
             Some(v) => v,
@@ -454,7 +457,7 @@ impl<T> PoolBuilder<T>
     pub fn build(self) -> Pool<T>
         where T: Recycleable
     {
-        let supplier = self.supplier.unwrap_or(Box::new(|| T::new()));
+        let supplier = self.supplier.unwrap_or_else(|| Box::new(|| T::new()));
         let values: CappedCollection<T> =
             CappedCollection::new(supplier, self.starting_size, self.max_size);
         Pool { values: Arc::new(RwLock::new(values)) }
