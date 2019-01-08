@@ -1,123 +1,54 @@
-extern crate parking_lot;
-
 #[allow(dead_code)]
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::Arc;
 use std::fmt;
 use std::ops::{Drop, Deref, DerefMut};
 use std::convert::{AsRef, AsMut};
 use std::cmp::{Ord, PartialOrd, PartialEq, Eq, Ordering};
 use std::hash::{Hash, Hasher};
-use std::borrow::Borrow;
-use std::collections::VecDeque;
+use std::borrow::{Borrow, BorrowMut};
 use std::mem::ManuallyDrop;
 
-pub mod sync;
+use parking_lot::RwLock;
 
-/// In order to be managed by a `Pool`, values must be of a type that
-/// implements the `Recycleable` trait. This allows the `Pool` to create
-/// new instances as well as reset existing instances to a like-new state.
-pub trait Recycleable {
-  /// Allocates a new instance of the implementing type.
-  fn new() -> Self;
-  /// Sets the state of the modified instance to be that of a freshly
-  /// allocated instance, thereby allowing it to be reused.
-  fn reset(&mut self);
-}
-
-/// Informs how an already allocated value should be initialized 
-/// when provided with a model value or other meaningful input.
-pub trait InitializeWith<T> {
-  fn initialize_with(&mut self, source: T);
-}
-
-impl Recycleable for String {
-  #[inline] 
-  fn new() -> String {
-    String::new()
-  }
-  #[inline] 
-  fn reset(&mut self) {
-    self.clear();
-  }
-}
-
-impl <T> Recycleable for Vec<T> {
-  #[inline] 
-  fn new() -> Vec<T> {
-    Vec::new()
-  }
-  #[inline] 
-  fn reset(&mut self) {
-    self.clear();
-  }
-}
-
-impl <T> Recycleable for VecDeque<T> {
-  #[inline] 
-  fn new() -> VecDeque<T> {
-    VecDeque::new()
-  }
-  #[inline] 
-  fn reset(&mut self) {
-    self.clear();
-  }
-}
-
-impl <A> InitializeWith<A> for String where A : AsRef<str> {
-  #[inline] 
-  fn initialize_with(&mut self, source: A) {
-    let s : &str = source.as_ref();
-    self.push_str(s);
-  }
-}
-
-impl <I, T> InitializeWith<I> for Vec<T> where I: Iterator<Item=T>{
-    #[inline]
-    fn initialize_with(&mut self, source: I) {
-        for it in source{
-            self.push(it);
-        }
-    }
-}
+use {Recycleable, InitializeWith};
 
 /// A smartpointer which uses a shared reference (`&`) to know
 /// when to move its wrapped value back to the `Pool` that
 /// issued it.
-pub struct Recycled<'a, T: 'a> where T: Recycleable {
-  value: RecycledInner<&'a RefCell<CappedCollection<T>>, T>
+pub struct Recycled<'a, T: 'a> where T: Recycleable + Sync + Send {
+  value: RecycledInner<&'a RwLock<CappedCollection<T>>, T>
 }
 
-/// A smartpointer which uses reference counting (`Rc`) to know
+/// A smartpointer which uses reference counting (`Arc`) to know
 /// when to move its wrapped value back to the `Pool` that
 /// issued it.
-pub struct RcRecycled<T> where T: Recycleable {
-  value: RecycledInner<Rc<RefCell<CappedCollection<T>>>, T>
+pub struct ArcRecycled<T> where T: Recycleable + Sync + Send {
+  value: RecycledInner<Arc<RwLock<CappedCollection<T>>>, T>
 }
 
 macro_rules! impl_recycled {
   ($name: ident, $typ: ty, $pool: ty) => {
-  impl <'a, T> AsRef<T> for $typ where T : Recycleable {
+  impl <'a, T> AsRef<T> for $typ where T : Recycleable + Sync + Send {
      /// Gets a shared reference to the value wrapped by the smartpointer.
      fn as_ref(&self) -> &T {
       self.value.as_ref()
     }
   }
 
-  impl <'a, T> AsMut<T> for $typ where T : Recycleable {
+  impl <'a, T> AsMut<T> for $typ where T : Recycleable + Sync + Send {
      /// Gets a mutable reference to the value wrapped by the smartpointer.
      fn as_mut(&mut self) -> &mut T {
       self.value.as_mut()
     }
   }
 
-  impl <'a, T> fmt::Debug for $typ where T : fmt::Debug + Recycleable {
+  impl <'a, T> fmt::Debug for $typ where T : fmt::Debug + Recycleable + Sync + Send {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
       self.value.fmt(f)
     }
   }
 
-  impl <'a, T> fmt::Display for $typ where T : fmt::Display + Recycleable {
+  impl <'a, T> fmt::Display for $typ where T : fmt::Display + Recycleable + Sync + Send {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
       self.value.fmt(f)
     }
@@ -125,27 +56,27 @@ macro_rules! impl_recycled {
 
   //-------- Passthrough trait implementations -----------
 
-  impl <'a, T> PartialEq for $typ where T : PartialEq + Recycleable {
+  impl <'a, T> PartialEq for $typ where T : PartialEq + Recycleable + Sync + Send {
     fn eq(&self, other: &Self) -> bool {
       self.value.eq(&other.value)
     }
   }
 
-  impl <'a, T> Eq for $typ where T: Eq + Recycleable {}
+  impl <'a, T> Eq for $typ where T: Eq + Recycleable + Sync + Send {}
 
-  impl <'a, T> PartialOrd for $typ where T: PartialOrd + Recycleable {
+  impl <'a, T> PartialOrd for $typ where T: PartialOrd + Recycleable + Sync + Send {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
       self.value.partial_cmp(&other.value)
     }
   }
 
-  impl <'a, T> Ord for $typ where T: Ord + Recycleable {
+  impl <'a, T> Ord for $typ where T: Ord + Recycleable + Sync + Send {
     fn cmp(&self, other: &Self) -> Ordering {
       self.value.cmp(&other.value)
     }
   }
 
-  impl <'a, T> Hash for $typ where T: Hash + Recycleable {
+  impl <'a, T> Hash for $typ where T: Hash + Recycleable + Sync + Send {
     fn hash<H: Hasher>(&self, state: &mut H) {
       self.value.hash(state)
     }
@@ -153,7 +84,7 @@ macro_rules! impl_recycled {
 
   //------------------------------------------------------
 
-  impl <'a, T> Deref for $typ where T : Recycleable {
+  impl <'a, T> Deref for $typ where T : Recycleable + Sync + Send {
     type Target = T;
     #[inline] 
     fn deref(&self) -> &T {
@@ -161,14 +92,14 @@ macro_rules! impl_recycled {
     }
   }
 
-  impl <'a, T> DerefMut for $typ where T : Recycleable {
+  impl <'a, T> DerefMut for $typ where T : Recycleable + Sync + Send {
     #[inline] 
     fn deref_mut(&mut self) -> &mut T {
       self.as_mut()
     }
   }
 
-  impl <'a, T> $typ where T: Recycleable {
+  impl <'a, T> $typ where T: Recycleable + Sync + Send {
     fn new(pool: $pool, value: T) -> $typ {
       $name { value: RecycledInner::new(pool, value) }
     }
@@ -187,18 +118,18 @@ macro_rules! impl_recycled {
   }
 }
 }
-impl_recycled!{ RcRecycled, RcRecycled<T>, Rc<RefCell<CappedCollection<T>>> }
-impl_recycled!{ Recycled, Recycled<'a, T>, &'a RefCell<CappedCollection<T>> }
+impl_recycled!{ ArcRecycled, ArcRecycled<T>, Arc<RwLock<CappedCollection<T>>> }
+impl_recycled!{ Recycled, Recycled<'a, T>, &'a RwLock<CappedCollection<T>> }
 
-impl <T> Clone for RcRecycled<T> where T: Clone + Recycleable {
+impl <T> Clone for ArcRecycled<T> where T: Clone + Recycleable + Sync + Send {
   fn clone(&self) -> Self {
-    RcRecycled {
+    ArcRecycled {
       value: self.value.clone()
     }
   }
 }
 
-impl <'a, T> Clone for Recycled<'a, T> where T: Clone + Recycleable {
+impl <'a, T> Clone for Recycled<'a, T> where T: Clone + Recycleable + Sync + Send {
   fn clone(&self) -> Self {
     Recycled {
       value: self.value.clone()
@@ -206,41 +137,41 @@ impl <'a, T> Clone for Recycled<'a, T> where T: Clone + Recycleable {
   }
 }
 
-struct RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : Recycleable {
+struct RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : Recycleable + Sync + Send {
   value: ManuallyDrop<T>,
   pool: P
 }
 
 // ---------- Passthrough Trait Implementations ------------
 
-impl <P, T> PartialEq for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>,
-                                                    T: PartialEq + Recycleable {
+impl <P, T> PartialEq for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>,
+                                                    T: PartialEq + Recycleable + Sync + Send {
   fn eq(&self, other: &Self) -> bool {
     self.value.eq(&other.value)
   }
 }
 
-impl <P, T> Eq for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>,
-                                             T: Eq + Recycleable {
+impl <P, T> Eq for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>,
+                                             T: Eq + Recycleable + Sync + Send {
 
 }
 
-impl <P, T> PartialOrd for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>,
-                                                     T: PartialOrd + Recycleable {
+impl <P, T> PartialOrd for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>,
+                                                     T: PartialOrd + Recycleable + Sync + Send {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
     self.value.partial_cmp(&other.value)
   }
 }
 
-impl <P, T> Ord for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>,
-                                              T: Ord + Recycleable {
+impl <P, T> Ord for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>,
+                                              T: Ord + Recycleable + Sync + Send {
   fn cmp(&self, other: &Self) -> Ordering {
     self.value.cmp(&other.value)
   }
 }
 
-impl <P, T> Hash for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>,
-                                               T: Hash + Recycleable {
+impl <P, T> Hash for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>,
+                                               T: Hash + Recycleable + Sync + Send {
   fn hash<H: Hasher>(&self, state: &mut H) {
     self.value.hash(state)
   }
@@ -248,10 +179,10 @@ impl <P, T> Hash for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollectio
 
 // Implementing Clone requires duplicating our shared reference to the capped collection, so we have
 // to provide separate implementations for RecycledInners used in Recycled and RcRecycled values.
-impl <'a, T> Clone for RecycledInner<&'a RefCell<CappedCollection<T>>, T> where T: Clone + Recycleable {
+impl <'a, T> Clone for RecycledInner<&'a RwLock<CappedCollection<T>>, T> where T: Clone + Recycleable + Sync + Send {
   fn clone(&self) -> Self {
-    let pool_ref = &*self.pool;
-    let mut cloned_value = pool_ref.borrow_mut().remove_or_create();
+    let mut pool_ref = &*self.pool;
+    let mut cloned_value = pool_ref.borrow_mut().write().remove_or_create();
     cloned_value.clone_from(&self.value);
     RecycledInner {
       value: ManuallyDrop::new(cloned_value),
@@ -260,10 +191,10 @@ impl <'a, T> Clone for RecycledInner<&'a RefCell<CappedCollection<T>>, T> where 
   }
 }
 
-impl <T> Clone for RecycledInner<Rc<RefCell<CappedCollection<T>>>, T> where T: Clone + Recycleable {
+impl <T> Clone for RecycledInner<Arc<RwLock<CappedCollection<T>>>, T> where T: Clone + Recycleable + Sync + Send {
   fn clone(&self) -> Self {
-    let pool_ref = self.pool.clone();
-    let mut cloned_value = pool_ref.borrow_mut().remove_or_create();
+    let mut pool_ref = self.pool.clone();
+    let mut cloned_value = pool_ref.borrow_mut().write().remove_or_create();
     cloned_value.clone_from(&self.value);
     RecycledInner {
       value: ManuallyDrop::new(cloned_value),
@@ -274,46 +205,46 @@ impl <T> Clone for RecycledInner<Rc<RefCell<CappedCollection<T>>>, T> where T: C
 
 // -------------------------------------------------------------
 
-impl <P, T> Drop for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : Recycleable {
+impl <P, T> Drop for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : Recycleable + Sync + Send {
   #[inline] 
   fn drop(&mut self) {
     let value = mem::replace(&mut self.value, unsafe {mem::uninitialized()});
     let mut value = ManuallyDrop::into_inner(value);
-    let pool_ref = self.pool.borrow();
-    if pool_ref.borrow().is_full() {
+    let mut pool_ref = self.pool.borrow();
+    if pool_ref.borrow().read().is_full() {
       drop(value);
       return;
     }
     value.reset();
-    pool_ref.borrow_mut().insert_prepared_value(value);
+    pool_ref.borrow_mut().write().insert_prepared_value(value);
   }
 }
 
-impl <P, T> AsRef<T> for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : Recycleable {
+impl <P, T> AsRef<T> for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : Recycleable + Sync + Send {
    fn as_ref(&self) -> &T {
      &self.value
   }
 }
 
-impl <P, T> AsMut<T> for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : Recycleable {
+impl <P, T> AsMut<T> for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : Recycleable + Sync + Send {
    fn as_mut(&mut self) -> &mut T {
      &mut self.value
   }
 }
 
-impl <P, T> fmt::Debug for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : fmt::Debug + Recycleable {
+impl <P, T> fmt::Debug for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : fmt::Debug + Recycleable + Sync + Send {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     self.value.fmt(f)
   }
 }
 
-impl <P, T> fmt::Display for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : fmt::Display + Recycleable {
+impl <P, T> fmt::Display for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : fmt::Display + Recycleable + Sync + Send {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     self.value.fmt(f)
   }
 }
 
-impl <P, T> Deref for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : Recycleable {
+impl <P, T> Deref for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : Recycleable + Sync + Send {
   type Target = T;
   #[inline] 
   fn deref(& self) -> &T {
@@ -321,14 +252,14 @@ impl <P, T> Deref for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollecti
   }
 }
 
-impl <P, T> DerefMut for RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : Recycleable {
+impl <P, T> DerefMut for RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : Recycleable + Sync + Send {
   #[inline] 
   fn deref_mut(&mut self) -> & mut T {
     self.as_mut()
   }
 }
 
-impl <P, T> RecycledInner<P, T> where P: Borrow<RefCell<CappedCollection<T>>>, T : Recycleable {
+impl <P, T> RecycledInner<P, T> where P: Borrow<RwLock<CappedCollection<T>>>, T : Recycleable + Sync + Send {
   #[inline] 
   fn new(pool: P, value: T) -> RecycledInner<P, T> {
     RecycledInner {
@@ -362,7 +293,7 @@ struct CappedCollection <T> where T: Recycleable {
   supplier: Box<Supply<Output=T>>
 }
 
-impl <T> CappedCollection <T> where T: Recycleable {
+impl <T> CappedCollection <T> where T: Recycleable + Sync + Send {
   #[inline]
   pub fn new(mut supplier: Box<Supply<Output=T>>, starting_size: usize, max_size: usize) -> CappedCollection<T> {
     use std::cmp;
@@ -415,13 +346,13 @@ impl <T> CappedCollection <T> where T: Recycleable {
 }
 
 /// Provides a method which will produce new instances of a type
-pub trait Supply {
-  type Output: Recycleable;
+pub trait Supply where Self: Sync + Send {
+  type Output: Recycleable + Sync + Send;
 
   fn get(&mut self) -> Self::Output;
 }
 
-impl <F, T> Supply for F where F: FnMut() -> T, T: Recycleable {
+impl <F, T> Supply for F where F: FnMut() -> T + Sync + Send, T: Recycleable + Sync + Send {
   type Output = T;
   fn get(&mut self) -> T {
     self()
@@ -433,10 +364,10 @@ impl <F, T> Supply for F where F: FnMut() -> T, T: Recycleable {
 /// `Pool` issues each value wrapped in a smartpointer. When the smartpointer goes out of
 /// scope, the wrapped value is automatically returned to the pool.
 pub struct Pool <T> where T : Recycleable {
-  values: Rc<RefCell<CappedCollection<T>>>,
+  values: Arc<RwLock<CappedCollection<T>>>,
 }
 
-impl <T> Pool <T> where T: Recycleable {
+impl <T> Pool <T> where T: Recycleable + Sync + Send {
 
   /// Creates a pool with `size` elements of type `T` allocated.
   #[inline]
@@ -455,20 +386,20 @@ impl <T> Pool <T> where T: Recycleable {
     let supplier = Box::new(|| T::new());
     let values: CappedCollection<T> = CappedCollection::new(supplier, starting_size, max_size);
     Pool {
-      values: Rc::new(RefCell::new(values))
+      values: Arc::new(RwLock::new(values))
     }
   }
 
   /// Returns the number of values remaining in the pool.
   #[inline] 
   pub fn size(&self) -> usize {
-    (*self.values).borrow().len()
+    (*self.values).borrow().read().len()
   }
   
   /// Returns the maximum number of values the pool can hold.
   #[inline] 
   pub fn max_size(&self) -> usize {
-    (*self.values).borrow().cap()
+    (*self.values).borrow().read().cap()
   }
 
   /// Removes a value from the pool and returns it wrapped in
@@ -502,37 +433,36 @@ impl <T> Pool <T> where T: Recycleable {
   /// returned to the pool.
   #[inline] 
   pub fn detached(&self) -> T {
-    let mut collection = self.values.borrow_mut();
-    collection.remove_or_create()
+    self.values.write().remove_or_create()
   }
 
   /// Removes a value from the pool and returns it wrapped in
-  /// an `RcRecycled` smartpointer. If the pool is empty when the
+  /// an `ArcRecycled` smartpointer. If the pool is empty when the
   /// method is called, a new value will be allocated.
   #[inline] 
-  pub fn new_rc(&self) -> RcRecycled<T> {
+  pub fn new_arc(&self) -> ArcRecycled<T> {
     let t = self.detached();
     let pool_reference = self.values.clone();
-    RcRecycled { value: RecycledInner::new(pool_reference, t) }
+    ArcRecycled { value: RecycledInner::new(pool_reference, t) }
   }
  
   /// Removes a value from the pool, initializes it using the provided
-  /// source value, and returns it wrapped in an `RcRecycled` smartpointer.
+  /// source value, and returns it wrapped in an `ArcRecycled` smartpointer.
   /// If the pool is empty when the method is called, a new value will be
   /// allocated.
   #[inline(always)] 
-  pub fn new_rc_from<A>(&self, source: A) -> RcRecycled<T> where T: InitializeWith<A> {
+  pub fn new_arc_from<A>(&self, source: A) -> ArcRecycled<T> where T: InitializeWith<A> {
     let t = self.detached();
     let pool_reference = self.values.clone();
-    RcRecycled { value: RecycledInner::new_from(pool_reference, t, source) }
+    ArcRecycled { value: RecycledInner::new_from(pool_reference, t, source) }
   }
 
   /// Associates the provided value with the pool by wrapping it in an
-  /// `RcRecycled` smartpointer.
+  /// `ArcRecycled` smartpointer.
   #[inline] 
-  pub fn attach_rc(&self, value: T) -> RcRecycled<T> {
+  pub fn attach_arc(&self, value: T) -> ArcRecycled<T> {
     let pool_reference = self.values.clone();
-    RcRecycled { value: RecycledInner::new(pool_reference, value) }
+    ArcRecycled { value: RecycledInner::new(pool_reference, value) }
   }
 }
 
@@ -568,23 +498,23 @@ pub struct PoolBuilder<T> where T: Recycleable {
   pub supplier: Option<Box<Supply<Output=T>>>,
 }
 
-impl <T> PoolBuilder<T> where T: Recycleable {
+impl <T> PoolBuilder<T> where T: Recycleable + Sync + Send {
   pub fn with<U>(self, option_setter: U) -> PoolBuilder<T> where 
       U: OptionSetter<PoolBuilder<T>> {
     option_setter.set_option(self)
   }
 
-  pub fn build(self) -> Pool<T> where T: Recycleable {
+  pub fn build(self) -> Pool<T> {
     let supplier = self.supplier.unwrap_or(Box::new(|| T::new()));
     let values: CappedCollection<T> = CappedCollection::new(supplier, self.starting_size, self.max_size);
     Pool {
-      values: Rc::new(RefCell::new(values))
+      values: Arc::new(RwLock::new(values))
     }
   }
 }
 
 pub mod settings {
-  use ::{PoolBuilder, Recycleable, Supply};
+  use sync::{PoolBuilder, Recycleable, Supply};
     /// Implementing this trait allows a struct to act as a configuration
     /// parameter in the builder API.
   pub trait OptionSetter<T> {
@@ -619,7 +549,7 @@ pub mod settings {
   
   impl <T, S> OptionSetter<PoolBuilder<T>> for Supplier<S> where
       S: Supply<Output=T> + 'static,
-      T: Recycleable {
+      T: Recycleable + Send + Sync {
     fn set_option(self, mut builder: PoolBuilder<T>) -> PoolBuilder<T> {
       let Supplier(supplier) = self;
       builder.supplier = Some(Box::new(supplier) as Box<Supply<Output=T>>);
@@ -628,5 +558,5 @@ pub mod settings {
   }
 }
 
-pub use settings::{OptionSetter, StartingSize, MaxSize, Supplier};
+pub use sync::settings::{OptionSetter, StartingSize, MaxSize, Supplier};
 use std::mem;
